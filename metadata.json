@@ -1,0 +1,5 @@
+{
+  "name": "Production Performance",
+  "description": "Sistema avançado para análise de produção industrial, integrando planos de produção e dados reais com processamento automático de turnos e metas.",
+  "requestFramePermissions": []
+}
