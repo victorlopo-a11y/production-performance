@@ -18,6 +18,17 @@ export interface ActualProductionRecord {
   productionDay: string;
 }
 
+export interface FailureReportRecord {
+  line: string;
+  material: string;
+  origin: string;
+  quantity: number;
+  date: string;
+  time: string;
+  shift: number;
+  productionDay: string;
+}
+
 export interface ComparisonResult {
   date: string;
   shift: number;
@@ -26,6 +37,9 @@ export interface ComparisonResult {
   product: string;
   meta: number;
   produced: number;
+  failures: number;
+  failuresByOrigin: Record<string, number>;
+  yield: number;
   difference: number;
   efficiency: number;
 }

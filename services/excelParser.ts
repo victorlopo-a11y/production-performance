@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { ProductionPlanRow, ActualProductionRecord } from '../types';
+import { ProductionPlanRow, ActualProductionRecord, FailureReportRecord } from '../types';
 
 export const parseExcelDate = (serial: any): string => {
   if (!serial) return '';
@@ -232,6 +232,109 @@ export const parseActualProductionExcel = async (file: File): Promise<ActualProd
           return r.quantity > 0;
         });
         
+        resolve(results);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+export const parseFailureReportExcel = async (file: File): Promise<FailureReportRecord[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+        const normalizeSheet = (val: string) =>
+          val
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+        const reportSheetName = workbook.SheetNames.find(name => normalizeSheet(name).includes('relatorio at'));
+        const sheetName = reportSheetName || workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const rowsMatrix: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+        const normalizeHeader = (val: string) =>
+          val
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const headerRowIndex = rowsMatrix.findIndex(row => {
+          const cols = row.map(v => normalizeHeader(String(v || '')));
+          const hasQty = cols.some(c => c === 'quantidade' || c.includes('quantidade') || c.startsWith('qtd'));
+          const hasOrigin = cols.some(c => c === 'origem' || c.includes('origem'));
+          const hasLineOrProduct = cols.some(c => c.includes('linha') || c.includes('produto') || c.includes('material') || c.includes('codigo'));
+          return hasQty && (hasOrigin || hasLineOrProduct);
+        });
+
+        const headerIndex = headerRowIndex === -1 ? 0 : headerRowIndex;
+        const headers = rowsMatrix[headerIndex] || [];
+
+        const findIndex = (keys: string[]) => {
+          const targets = keys.map(k => normalizeHeader(k));
+          const normalized = headers.map(h => normalizeHeader(String(h || '')));
+          let idx = normalized.findIndex(h => targets.some(t => h === t));
+          if (idx === -1) {
+            idx = normalized.findIndex(h => targets.some(t => h.includes(t)));
+          }
+          return idx;
+        };
+
+        const lineIdx = findIndex(['processo linha', 'linha', 'line', 'centro', 'posto', 'recurso', 'maquina', 'deposito', 'centro de trabalho']);
+        const materialIdx = findIndex(['material', 'codigo', 'cod', 'produto']);
+        const originIdx = findIndex(['origem', 'origem processo', 'origem da falha']);
+        const qtyIdx = findIndex(['quantidade', 'qtd falha', 'qtde falha', 'falha', 'defeito', 'qtd', 'quant']);
+        const dateIdx = findIndex(['data de lancamento', 'data lancamento', 'data de entrada', 'data', 'dia']);
+        const timeIdx = findIndex(['hora do registro', 'hora', 'horario', 'time']);
+
+        const dataRows = rowsMatrix.slice(headerIndex + 1);
+        const results: FailureReportRecord[] = dataRows.map(row => {
+          const line = String(lineIdx >= 0 ? row[lineIdx] : '').trim();
+          const material = String(materialIdx >= 0 ? row[materialIdx] : '').trim();
+          const origin = String(originIdx >= 0 ? row[originIdx] : '').trim();
+          const quantityVal = qtyIdx >= 0 ? row[qtyIdx] : '';
+          const parsedQuantity = typeof quantityVal === 'number' ? quantityVal : parseFloat(String(quantityVal).replace(/\./g, '').replace(',', '.')) || 0;
+          const quantity = Math.round(parsedQuantity);
+
+          const dateVal = dateIdx >= 0 ? row[dateIdx] : '';
+          const dateStr = parseExcelDate(dateVal);
+
+          const timeVal = timeIdx >= 0 ? row[timeIdx] : '';
+          let timeStr = parseExcelTime(timeVal);
+          if (timeStr === '00:00:00' && dateVal) {
+            timeStr = parseExcelTime(dateVal);
+          }
+
+          const shiftData = calculateShiftAndProductionDay(dateStr, timeStr);
+
+          return {
+            line,
+            material: material || 'NA',
+            origin,
+            quantity,
+            date: dateStr,
+            time: timeStr,
+            shift: shiftData.shift,
+            productionDay: shiftData.productionDay
+          };
+        }).filter(r => {
+          if (r.quantity <= 0) return false;
+          const material = r.material.toLowerCase();
+          const line = r.line.toLowerCase();
+          if (material === 'total' || line === 'total') return false;
+          if (material.startsWith('mon')) return false;
+          if (!r.line && !r.material) return false;
+          return true;
+        });
+
         resolve(results);
       } catch (err) {
         reject(err);

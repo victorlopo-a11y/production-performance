@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
   PieChart, Pie
@@ -7,22 +7,29 @@ import {
   Upload, CheckCircle2, AlertCircle, Filter, 
   BarChart3, List, Calendar, User, ArrowUpRight, ArrowDownRight, FileType, Search, Trash2, X, ChevronDown
 } from 'lucide-react';
-import { ProductionPlanRow, ActualProductionRecord, ComparisonResult } from './types';
-import { parseProductionPlanExcel, parseActualProductionExcel, fileToBase64, calculateShiftAndProductionDay } from './services/excelParser';
+import { ProductionPlanRow, ActualProductionRecord, FailureReportRecord, ComparisonResult } from './types';
+import { parseProductionPlanExcel, parseActualProductionExcel, parseFailureReportExcel, fileToBase64, calculateShiftAndProductionDay } from './services/excelParser';
 import { GoogleGenAI } from "@google/genai";
 import * as XLSX from 'xlsx';
+import html2canvas from 'html2canvas';
 
 const App: React.FC = () => {
   const [planData, setPlanData] = useState<ProductionPlanRow[]>([]);
   const [actualData, setActualData] = useState<ActualProductionRecord[]>([]);
+  const [failureData, setFailureData] = useState<FailureReportRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Processando Arquivos...');
   const [activeTab, setActiveTab] = useState<'upload' | 'dashboard'>('upload');
   
-  const [selectedShift, setSelectedShift] = useState<number | 'all'>('all');
-  const [selectedDate, setSelectedDate] = useState<string>('all');
-  const [selectedLine, setSelectedLine] = useState<string>('all');
+  const [selectedShift, setSelectedShift] = useState<Array<number | 'all'>>(['all']);
+  const [selectedDate, setSelectedDate] = useState<Array<string | 'all'>>(['all']);
+  const [selectedLine, setSelectedLine] = useState<Array<string | 'all'>>(['all']);
   const [searchTerm, setSearchTerm] = useState('');
+  const tableRef = useRef<HTMLDivElement | null>(null);
+  const [isExportingPng, setIsExportingPng] = useState(false);
+
+  const readMultiSelectValues = (e: React.ChangeEvent<HTMLSelectElement>) =>
+    Array.from(e.target.selectedOptions).map(option => option.value);
 
   const normalizeProductCode = (code: string): string => {
     if (!code) return '';
@@ -128,6 +135,27 @@ const App: React.FC = () => {
     finally { setIsLoading(false); e.target.value = ''; }
   };
 
+  const handleFailureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    setIsLoading(true);
+    setLoadingMessage('Importando Relatorio AT - AR...');
+    try {
+      const files = Array.from(e.target.files);
+      let all: FailureReportRecord[] = [];
+      for (const f of files) {
+        if (f.name.endsWith('.pdf')) {
+          const results = await extractActualFromPDF(f);
+          all = [...all, ...results.map(r => ({ ...r, origin: '' }))];
+        } else {
+          const results = await parseFailureReportExcel(f);
+          all = [...all, ...results];
+        }
+      }
+      setFailureData(prev => [...prev, ...all]);
+    } catch (err) { alert('Erro no processamento.'); }
+    finally { setIsLoading(false); e.target.value = ''; }
+  };
+
   const handleActualUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     setIsLoading(true);
@@ -149,14 +177,17 @@ const App: React.FC = () => {
     
     // 1. Agrega Produção Real: Dia | Turno | Linha | Material (Normalizado)
     const actualAggregated: Record<string, { produced: number; originalLine: string; originalMaterial: string }> = {};
+    const producedByLine: Record<string, number> = {};
     actualData.forEach(item => {
       const normCode = normalizeProductCode(item.material);
       const lineKey = normalizeLineCode(item.line);
       const key = `${item.productionDay}|${item.shift}|${lineKey}|${normCode}`;
+      const lineOnlyKey = `${item.productionDay}|${item.shift}|${lineKey}`;
       if (!actualAggregated[key]) {
         actualAggregated[key] = { produced: 0, originalLine: item.line, originalMaterial: item.material };
       }
       actualAggregated[key].produced += item.quantity;
+      producedByLine[lineOnlyKey] = (producedByLine[lineOnlyKey] || 0) + item.quantity;
     });
 
     // 2. Agrega Plano de Metas: Dia | Turno | Linha | Material (Normalizado)
@@ -172,7 +203,20 @@ const App: React.FC = () => {
       planAggregated[key].meta += p.meta;
     });
 
-    // 3. Cruzamento de Dados
+    // 3. Agrega Falhas: Dia | Turno | Linha (Normalizado)
+    const failuresByLine: Record<string, { total: number; origins: Record<string, number> }> = {};
+    failureData.forEach(item => {
+      const lineKey = normalizeLineCode(item.line);
+      const key = `${item.productionDay}|${item.shift}|${lineKey}`;
+      if (!failuresByLine[key]) {
+        failuresByLine[key] = { total: 0, origins: {} };
+      }
+      failuresByLine[key].total += item.quantity;
+      const originKey = item.origin ? item.origin : 'Sem origem';
+      failuresByLine[key].origins[originKey] = (failuresByLine[key].origins[originKey] || 0) + item.quantity;
+    });
+
+    // 4. Cruzamento de Dados
     Object.keys(planAggregated).forEach(key => {
       const [date, shiftStr, lineKey, normCode] = key.split('|');
       const shift = parseInt(shiftStr);
@@ -180,6 +224,11 @@ const App: React.FC = () => {
       
       // Busca produção REAL exata para este turno e linha
       const produced = actualAggregated[key]?.produced || 0;
+      const lineOnlyKey = `${date}|${shift}|${lineKey}`;
+      const failures = failuresByLine[lineOnlyKey]?.total || 0;
+      const failuresByOrigin = failuresByLine[lineOnlyKey]?.origins || {};
+      const producedLine = producedByLine[lineOnlyKey] || 0;
+      const yieldValue = producedLine > 0 ? Math.max(0, (1 - failures / producedLine) * 100) : 0;
       const difference = produced - p.meta;
       const efficiency = p.meta > 0 ? (produced / p.meta) * 100 : 0;
 
@@ -191,6 +240,9 @@ const App: React.FC = () => {
         product: p.originalProduct,
         meta: p.meta,
         produced,
+        failures,
+        failuresByOrigin,
+        yield: yieldValue,
         difference,
         efficiency
       });
@@ -198,9 +250,14 @@ const App: React.FC = () => {
 
     Object.keys(actualAggregated).forEach(key => {
       if (planAggregated[key]) return;
-      const [date, shiftStr] = key.split('|');
+      const [date, shiftStr, lineKey] = key.split('|');
       const shift = parseInt(shiftStr);
       const a = actualAggregated[key];
+      const lineOnlyKey = `${date}|${shift}|${lineKey}`;
+      const failures = failuresByLine[lineOnlyKey]?.total || 0;
+      const failuresByOrigin = failuresByLine[lineOnlyKey]?.origins || {};
+      const producedLine = producedByLine[lineOnlyKey] || 0;
+      const yieldValue = producedLine > 0 ? Math.max(0, (1 - failures / producedLine) * 100) : 0;
       results.push({
         date,
         shift,
@@ -209,13 +266,16 @@ const App: React.FC = () => {
         product: 'EXPORT',
         meta: 0,
         produced: a.produced,
+        failures,
+        failuresByOrigin,
+        yield: yieldValue,
         difference: a.produced,
         efficiency: 0
       });
     });
 
     return results;
-  }, [planData, actualData]);
+  }, [planData, actualData, failureData]);
 
   const uniqueDates = useMemo(() => [...new Set(comparisonResults.map(r => r.date))].sort((a,b) => {
     const [da,ma,ya] = a.split('/').map(Number);
@@ -226,9 +286,9 @@ const App: React.FC = () => {
   const uniqueLines = useMemo(() => [...new Set(comparisonResults.map(r => r.line))].sort(), [comparisonResults]);
 
   const filtered = useMemo(() => comparisonResults.filter(r => {
-    const mShift = selectedShift === 'all' || r.shift === selectedShift;
-    const mDate = selectedDate === 'all' || r.date === selectedDate;
-    const mLine = selectedLine === 'all' || r.line === selectedLine;
+    const mShift = selectedShift.includes('all') || selectedShift.includes(r.shift);
+    const mDate = selectedDate.includes('all') || selectedDate.includes(r.date);
+    const mLine = selectedLine.includes('all') || selectedLine.includes(r.line);
     const mSearch = searchTerm === '' || r.material.toLowerCase().includes(searchTerm.toLowerCase()) || r.product.toLowerCase().includes(searchTerm.toLowerCase());
     return mShift && mDate && mLine && mSearch;
   }), [comparisonResults, selectedShift, selectedDate, selectedLine, searchTerm]);
@@ -240,17 +300,28 @@ const App: React.FC = () => {
   }, [filtered]);
 
   const handleExportExcel = () => {
-    const rows = filtered.map(r => ({
-      Data: r.date,
-      Linha: r.line,
-      Turno: r.shift,
-      Material: r.material,
-      Produto: r.product,
-      Meta: r.meta,
-      ProducaoReal: r.produced,
-      Diferenca: r.difference,
-      Eficiencia: Number(r.efficiency.toFixed(1))
-    }));
+    const originKeys = Array.from(new Set(
+      filtered.flatMap(r => Object.keys(r.failuresByOrigin))
+    )).sort();
+    const rows = filtered.map(r => {
+      const base = {
+        Data: r.date,
+        Linha: r.line,
+        Turno: r.shift,
+        Material: r.material,
+        Produto: r.product,
+        Meta: r.meta,
+        ProducaoReal: r.produced,
+        Falhas: r.failures,
+        Yield: Number(r.yield.toFixed(1)),
+        Diferenca: r.difference,
+        Eficiencia: Number(r.efficiency.toFixed(1))
+      } as Record<string, string | number>;
+      originKeys.forEach(k => {
+        base[`Falhas - ${k}`] = r.failuresByOrigin[k] || 0;
+      });
+      return base;
+    });
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Relatorio');
@@ -258,65 +329,85 @@ const App: React.FC = () => {
     XLSX.writeFile(wb, name);
   };
 
+  const handleExportCsv = () => {
+    const originKeys = Array.from(new Set(
+      filtered.flatMap(r => Object.keys(r.failuresByOrigin))
+    )).sort();
+    const headers = ['Data', 'Linha', 'Turno', 'Material', 'Produto', 'Meta', 'ProducaoReal', 'Falhas', 'Yield', 'Diferenca', 'Eficiencia', ...originKeys.map(k => `Falhas - ${k}`)];
+    const rows = filtered.map(r => ([
+      r.date,
+      r.line,
+      String(r.shift),
+      r.material,
+      r.product,
+      String(r.meta),
+      String(r.produced),
+      String(r.failures),
+      r.yield.toFixed(1),
+      String(r.difference),
+      r.efficiency.toFixed(1),
+      ...originKeys.map(k => String(r.failuresByOrigin[k] || 0))
+    ]));
+    const escapeCsv = (val: string) => `"${val.replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows]
+      .map(row => row.map(escapeCsv).join(','))
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `production_performance_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const escapeHtml = (val: string) =>
     val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const handleExportPdf = () => {
-    const rowsHtml = filtered.map(r => `
-      <tr>
-        <td>${escapeHtml(r.date)}</td>
-        <td>${escapeHtml(r.line)}</td>
-        <td>${r.shift}</td>
-        <td>${escapeHtml(r.material)}</td>
-        <td>${escapeHtml(r.product)}</td>
-        <td style="text-align:right">${r.meta.toLocaleString()}</td>
-        <td style="text-align:right">${r.produced.toLocaleString()}</td>
-        <td style="text-align:right">${r.difference.toLocaleString()}</td>
-        <td style="text-align:right">${r.efficiency.toFixed(1)}%</td>
-      </tr>
-    `).join('');
-
-    const html = `
+  const handleExportPdf = async () => {
+    if (!tableRef.current) return;
+    setIsExportingPng(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const canvas = await html2canvas(tableRef.current, { backgroundColor: '#ffffff', scale: 3 });
+    setIsExportingPng(false);
+    const dataUrl = canvas.toDataURL('image/png');
+    const win = window.open('', '_blank', 'width=1200,height=800');
+    if (!win) return;
+    win.document.write(`
       <html>
         <head>
           <title>Production Performance</title>
           <style>
-            body { font-family: Arial, sans-serif; padding: 24px; }
-            h1 { font-size: 18px; margin: 0 0 12px 0; }
-            .meta { font-size: 12px; color: #666; margin-bottom: 16px; }
-            table { border-collapse: collapse; width: 100%; font-size: 12px; }
-            th, td { border: 1px solid #ddd; padding: 6px 8px; }
-            th { background: #f5f5f5; text-align: left; }
+            @page { margin: 0; }
+            html, body { margin: 0; padding: 0; background: #fff; }
+            img { width: 100%; height: auto; display: block; }
           </style>
         </head>
         <body>
-          <h1>Production Performance</h1>
-          <div class="meta">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
-          <table>
-            <thead>
-              <tr>
-                <th>Data</th>
-                <th>Linha</th>
-                <th>Turno</th>
-                <th>Material</th>
-                <th>Produto</th>
-                <th style="text-align:right">Meta</th>
-                <th style="text-align:right">Producao Real</th>
-                <th style="text-align:right">Diferenca</th>
-                <th style="text-align:right">Eficiencia</th>
-              </tr>
-            </thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
+          <img id="report-img" />
         </body>
       </html>
-    `;
-    const win = window.open('', '_blank', 'width=1200,height=800');
-    if (!win) return;
-    win.document.write(html);
+    `);
     win.document.close();
-    win.focus();
-    win.print();
+    const img = win.document.getElementById('report-img') as HTMLImageElement | null;
+    if (!img) return;
+    img.onload = () => {
+      win.focus();
+      win.print();
+    };
+    img.src = dataUrl;
+  };
+
+  const handleExportPng = async () => {
+    if (!tableRef.current) return;
+    setIsExportingPng(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const canvas = await html2canvas(tableRef.current, { backgroundColor: '#ffffff', scale: 3 });
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = `production_performance_${new Date().toISOString().slice(0,10)}.png`;
+    link.click();
+    setIsExportingPng(false);
   };
 
   return (
@@ -339,7 +430,7 @@ const App: React.FC = () => {
               <h2 className="text-4xl font-black text-slate-900 tracking-tighter">CONFIGURAÇÃO DE DADOS</h2>
               <p className="text-slate-400 font-medium">Sincronize metas e produção para análise instantânea por turno.</p>
             </div>
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-3 gap-6">
               <div className="bg-white p-10 rounded-3xl border border-slate-100 shadow-xl text-center space-y-6">
                 <Calendar className="mx-auto text-blue-500" size={48}/>
                 <h3 className="text-xl font-black">METAS PROGRAMADAS</h3>
@@ -362,6 +453,15 @@ const App: React.FC = () => {
                 </label>
                 {actualData.length > 0 && <span className="inline-block bg-green-50 text-green-600 px-4 py-1 rounded-full text-xs font-black uppercase tracking-wider">{actualData.length} entradas reais</span>}
               </div>
+              <div className="bg-white p-10 rounded-3xl border border-slate-100 shadow-xl text-center space-y-6">
+                <AlertCircle className="mx-auto text-rose-500" size={48}/>
+                <h3 className="text-xl font-black">RELATORIO AT - AR</h3>
+                <label className="block bg-rose-600 text-white py-4 rounded-2xl font-black cursor-pointer hover:bg-rose-700 transition-all shadow-lg shadow-rose-100">
+                  <input type="file" multiple onChange={handleFailureUpload} className="hidden" />
+                  CARREGAR RELATORIO
+                </label>
+                {failureData.length > 0 && <span className="inline-block bg-green-50 text-green-600 px-4 py-1 rounded-full text-xs font-black uppercase tracking-wider">{failureData.length} falhas importadas</span>}
+              </div>
             </div>
             {isReady && <div className="text-center pt-6"><button onClick={() => setActiveTab('dashboard')} className="bg-emerald-600 text-white px-16 py-6 rounded-3xl font-black text-2xl shadow-2xl hover:scale-105 transition-all">INICIAR ANÁLISE</button></div>}
           </div>
@@ -370,14 +470,33 @@ const App: React.FC = () => {
             <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 grid md:grid-cols-4 gap-4">
                <div>
                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Referência</span>
-                 <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none">
+                 <select multiple size={1} value={selectedDate.map(String)} onChange={e => {
+                   const values = readMultiSelectValues(e);
+                   setSelectedDate(prev => {
+                     const hadAll = prev.includes('all');
+                     if (values.includes('all')) {
+                       return values.length > 1 && hadAll ? values.filter(v => v !== 'all') : ['all'];
+                     }
+                     return values;
+                   });
+                 }} className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none">
                    <option value="all">Todas as Datas</option>
                    {uniqueDates.map(d => <option key={d} value={d}>{d}</option>)}
                  </select>
                </div>
                <div>
                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Período</span>
-                 <select value={selectedShift} onChange={e => setSelectedShift(e.target.value === 'all' ? 'all' : Number(e.target.value))} className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none">
+                 <select multiple size={1} value={selectedShift.map(String)} onChange={e => {
+                   const values = readMultiSelectValues(e);
+                   setSelectedShift(prev => {
+                     const hadAll = prev.includes('all');
+                     if (values.includes('all')) {
+                       const next = values.length > 1 && hadAll ? values.filter(v => v !== 'all') : ['all'];
+                       return next.map(v => (v === 'all' ? 'all' : Number(v))).filter(v => v === 'all' || !Number.isNaN(v));
+                     }
+                     return values.map(v => Number(v)).filter(v => !Number.isNaN(v));
+                   });
+                 }} className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none">
                    <option value="all">Todos os Turnos</option>
                    <option value="1">1° Turno (05:00 - 17:29)</option>
                    <option value="2">2° Turno (17:30 - 04:59)</option>
@@ -385,7 +504,16 @@ const App: React.FC = () => {
                </div>
                <div>
                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Linha</span>
-                 <select value={selectedLine} onChange={e => setSelectedLine(e.target.value)} className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none">
+                 <select multiple size={1} value={selectedLine.map(String)} onChange={e => {
+                   const values = readMultiSelectValues(e);
+                   setSelectedLine(prev => {
+                     const hadAll = prev.includes('all');
+                     if (values.includes('all')) {
+                       return values.length > 1 && hadAll ? values.filter(v => v !== 'all') : ['all'];
+                     }
+                     return values;
+                   });
+                 }} className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none">
                    <option value="all">Todas as Linhas</option>
                    {uniqueLines.map(l => <option key={l} value={l}>{l}</option>)}
                  </select>
@@ -395,9 +523,12 @@ const App: React.FC = () => {
                  <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Buscar..." className="w-full bg-slate-50 p-2 rounded-xl text-sm font-bold border-none outline-none" />
                </div>
             </div>
+
             <div className="flex flex-wrap gap-3">
               <button onClick={handleExportExcel} className="bg-slate-900 text-white px-4 py-2 rounded-xl font-black text-xs tracking-wide hover:bg-slate-800 transition-all">EXPORTAR EXCEL</button>
               <button onClick={handleExportPdf} className="bg-white text-slate-900 px-4 py-2 rounded-xl font-black text-xs tracking-wide border border-slate-200 hover:bg-slate-50 transition-all">EXPORTAR PDF</button>
+              <button onClick={handleExportCsv} className="bg-white text-slate-900 px-4 py-2 rounded-xl font-black text-xs tracking-wide border border-slate-200 hover:bg-slate-50 transition-all">EXPORTAR CSV</button>
+              <button onClick={handleExportPng} className="bg-white text-slate-900 px-4 py-2 rounded-xl font-black text-xs tracking-wide border border-slate-200 hover:bg-slate-50 transition-all">EXPORTAR PNG</button>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -417,8 +548,13 @@ const App: React.FC = () => {
               ))}
             </div>
 
-            <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden shadow-sm">
-              <table className="w-full text-left">
+            <div ref={tableRef} className="bg-white rounded-3xl border border-slate-100 overflow-hidden shadow-sm">
+              {isExportingPng && (
+                <style>
+                  {`.export-table{border-collapse:collapse;} .export-table th,.export-table td{border:1px solid #e2e8f0;}`}
+                </style>
+              )}
+              <table className={`w-full text-left ${isExportingPng ? 'export-table' : ''}`}>
                 <thead>
                   <tr className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                     <th className="px-6 py-4">Data</th>
@@ -427,6 +563,8 @@ const App: React.FC = () => {
                     <th className="px-6 py-4">Material / Detalhes</th>
                     <th className="px-6 py-4 text-right">Meta</th>
                     <th className="px-6 py-4 text-right">Produção Real</th>
+                    <th className="px-6 py-4 text-right">Falhas</th>
+                    <th className="px-6 py-4 text-right">Yield</th>
                     <th className="px-6 py-4 text-right">Status</th>
                   </tr>
                 </thead>
@@ -435,19 +573,22 @@ const App: React.FC = () => {
                     <tr key={idx} className="hover:bg-blue-50/20 transition-all group">
                       <td className="px-6 py-5 text-[11px] font-bold text-slate-400">{r.date}</td>
                       <td className="px-6 py-5">
-                         <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase">{r.line}</span>
+                         <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase inline-flex items-center justify-center text-center min-w-[56px]">{r.line}</span>
                       </td>
                       <td className="px-6 py-5">
-                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black text-white ${r.shift === 1 ? 'bg-blue-500' : 'bg-indigo-600'}`}>{r.shift}° TURNO</span>
+                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black text-white inline-flex items-center justify-center text-center min-w-[72px] ${r.shift === 1 ? 'bg-blue-500' : 'bg-indigo-600'}`}>{r.shift}° TURNO</span>
                       </td>
                       <td className="px-6 py-5">
                         <div className="flex flex-col">
                           <span className="text-sm font-black text-slate-800 tracking-tight">{r.material}</span>
-                          <span className="text-[10px] font-bold text-slate-400 uppercase truncate max-w-[200px]">{r.product}</span>
+                          <span className={`text-[10px] font-bold text-slate-400 uppercase ${isExportingPng ? 'whitespace-normal break-words' : 'truncate max-w-[200px]'}`}>{r.product}</span>
                         </div>
                       </td>
                       <td className="px-6 py-5 text-right font-bold text-slate-400 text-sm">{r.meta.toLocaleString()}</td>
                       <td className="px-6 py-5 text-right font-black text-blue-600 text-sm">{r.produced.toLocaleString()}</td>
+                      <td className="px-6 py-5 text-right font-bold text-slate-400 text-sm">{r.failures.toLocaleString()}</td>
+                      <td className="px-6 py-5 text-right font-black text-emerald-600 text-sm">{r.yield.toFixed(1)}%</td>
+                      
                       <td className="px-6 py-5 text-right">
                         <div className="flex flex-col items-end gap-1">
                           <span className={`text-xs font-black ${r.efficiency >= 100 ? 'text-green-600' : r.efficiency >= 90 ? 'text-blue-600' : 'text-rose-600'}`}>{r.efficiency.toFixed(1)}%</span>
@@ -481,3 +622,19 @@ const App: React.FC = () => {
 const isReady = (p: any, a: any) => p.length > 0 && a.length > 0;
 
 export default App;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
