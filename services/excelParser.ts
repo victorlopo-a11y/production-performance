@@ -27,7 +27,8 @@ function getWorker(): Worker | null {
       if (msg.ok) {
         pending.resolve(msg.result);
       } else {
-        pending.reject(new Error(msg.error || 'Erro ao processar arquivo'));
+        const errorMessage = ('error' in msg ? msg.error : '') || 'Erro ao processar arquivo';
+        pending.reject(new Error(errorMessage));
       }
     };
     workerSingleton.onerror = (err) => {
@@ -159,8 +160,15 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
         let headerRowIndex = -1;
         let dateRowIndex = -1;
 
+        const normalizeHeader = (val: string) =>
+          val
+            .toUpperCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim();
+
         for (let i = 0; i < Math.min(rows.length, 100); i++) {
-          const rowValues = rows[i].map(v => String(v).toUpperCase().trim());
+          const rowValues = rows[i].map(v => normalizeHeader(String(v || '')));
           const hasProg = rowValues.some(v => v === 'PROG' || v.includes('PROGRAMADO'));
           if (hasProg) {
             headerRowIndex = i;
@@ -178,12 +186,12 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
 
         if (headerRowIndex === -1) return resolve([]);
 
-        const headers = rows[headerRowIndex].map(v => String(v).toUpperCase().trim());
+        const headers = rows[headerRowIndex].map(v => normalizeHeader(String(v || '')));
         const dateRow = dateRowIndex !== -1 ? rows[dateRowIndex] : [];
 
         const lineIdx = headers.findIndex(v => v.includes('LINHA') || v.includes('LINE'));
         const shiftIdx = headers.findIndex(v => v.includes('TURNO') || v.includes('SHIFT'));
-        const codeIdx = headers.findIndex(v => v.includes('CÓDIGO') || v.includes('CODIGO') || v.includes('CODE'));
+        const codeIdx = headers.findIndex(v => v.includes('CODIGO') || v.includes('CODE'));
         const productIdx = headers.findIndex(v => v.includes('PRODUTO') || v.includes('PRODUCT'));
 
         const progColumns: { index: number; date: string }[] = [];

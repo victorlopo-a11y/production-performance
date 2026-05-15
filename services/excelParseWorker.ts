@@ -79,6 +79,14 @@ function parseExcelTime(val: any): string {
   return '00:00:00';
 }
 
+function normalizeHeader(value: string): string {
+  return String(value || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
 function calculateShiftAndProductionDay(dateStr: string, timeStr: string): { shift: number; productionDay: string } {
   try {
     const timeParts = timeStr.split(':');
@@ -129,7 +137,7 @@ function parseProductionPlanExcelCore(buffer: ArrayBuffer): ProductionPlanRow[] 
   let dateRowIndex = -1;
 
   for (let i = 0; i < Math.min(rows.length, 100); i++) {
-    const rowValues = rows[i].map((v) => String(v).toUpperCase().trim());
+    const rowValues = rows[i].map((v) => normalizeHeader(String(v || '')));
     const hasProg = rowValues.some((v) => v === 'PROG' || v.includes('PROGRAMADO'));
     if (hasProg) {
       headerRowIndex = i;
@@ -149,12 +157,13 @@ function parseProductionPlanExcelCore(buffer: ArrayBuffer): ProductionPlanRow[] 
 
   if (headerRowIndex === -1) return [];
 
-  const headers = rows[headerRowIndex].map((v) => String(v).toUpperCase().trim());
+  const headersRaw = rows[headerRowIndex].map((v) => String(v || ''));
+  const headers = headersRaw.map((v) => normalizeHeader(v));
   const dateRow = dateRowIndex !== -1 ? rows[dateRowIndex] : [];
 
   const lineIdx = headers.findIndex((v) => v.includes('LINHA') || v.includes('LINE'));
   const shiftIdx = headers.findIndex((v) => v.includes('TURNO') || v.includes('SHIFT'));
-  const codeIdx = headers.findIndex((v) => v.includes('CÃ“DIGO') || v.includes('CODIGO') || v.includes('CODE'));
+  const codeIdx = headers.findIndex((v) => v.includes('CODIGO') || v.includes('CODE'));
   const productIdx = headers.findIndex((v) => v.includes('PRODUTO') || v.includes('PRODUCT'));
 
   const progColumns: { index: number; date: string }[] = [];
@@ -176,13 +185,13 @@ function parseProductionPlanExcelCore(buffer: ArrayBuffer): ProductionPlanRow[] 
 
   for (let i = headerRowIndex + 1; i < rows.length; i++) {
     const row = rows[i];
-    const code = String(row[codeIdx] || '').trim();
+    const code = String(codeIdx >= 0 ? row[codeIdx] : '').trim();
     if (!code || code.toLowerCase() === 'total') continue;
 
-    const line = String(row[lineIdx] || '').trim();
-    const rawShift = String(row[shiftIdx] || '');
+    const line = String(lineIdx >= 0 ? row[lineIdx] : '').trim();
+    const rawShift = String(shiftIdx >= 0 ? row[shiftIdx] : '');
     const shift = parseInt(rawShift.replace(/\D/g, '')) || 1;
-    const product = String(row[productIdx] || '').trim();
+    const product = String(productIdx >= 0 ? row[productIdx] : '').trim();
 
     progColumns.forEach((progCol) => {
       const metaValue = row[progCol.index];
