@@ -51,8 +51,27 @@ async function runInWorker<T>(payload: Omit<WorkerRequest, 'id'>): Promise<T> {
   const message: WorkerRequest = { id, ...payload } as WorkerRequest;
 
   return new Promise<T>((resolve, reject) => {
-    workerPending.set(id, { resolve: resolve as unknown as (v: unknown) => void, reject });
-    worker.postMessage(message);
+    const timeout = setTimeout(() => {
+      workerPending.delete(id);
+      reject(new Error('Tempo excedido ao processar o arquivo. Tente novamente.'));
+    }, 120_000);
+
+    workerPending.set(id, {
+      resolve: (value) => {
+        clearTimeout(timeout);
+        resolve(value as T);
+      },
+      reject: (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      },
+    });
+    const transfer: Transferable[] = [];
+    if ('buffer' in message && message.buffer instanceof ArrayBuffer) {
+      transfer.push(message.buffer);
+    }
+    // Transfer the ArrayBuffer to avoid a costly structured clone of large XLSM files.
+    worker.postMessage(message, transfer);
   });
 }
 
