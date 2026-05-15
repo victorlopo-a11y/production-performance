@@ -153,7 +153,20 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array', cellDates: false });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const normalizeSheet = (val: string) =>
+          val
+            .toUpperCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim();
+
+        const planSheetName =
+          (workbook.Sheets['Plano'] && 'Plano') ||
+          (workbook.Sheets['PLANO'] && 'PLANO') ||
+          workbook.SheetNames.find((name) => normalizeSheet(name).includes('PLANO')) ||
+          workbook.SheetNames[0];
+
+        const sheet = workbook.Sheets[planSheetName];
         const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         
         const results: ProductionPlanRow[] = [];

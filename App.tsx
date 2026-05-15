@@ -119,6 +119,9 @@ const App: React.FC = () => {
         const results = f.name.endsWith('.pdf') ? await extractPlanFromPDF(f) : await parseProductionPlanExcel(f);
         all = [...all, ...results];
       }
+      if (all.length === 0) {
+        alert('NÃ£o encontrei metas (PROG) nesse arquivo. Confirme se a aba \"Plano\" existe e se o arquivo Ã© do modelo correto.');
+      }
       setPlanData(prev => [...prev, ...all]);
     } catch (err) { alert('Erro no processamento.'); }
     finally { setIsLoading(false); e.target.value = ''; }

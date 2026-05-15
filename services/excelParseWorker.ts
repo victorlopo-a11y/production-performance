@@ -87,6 +87,16 @@ function normalizeHeader(value: string): string {
     .trim();
 }
 
+function pickPlanSheet(workbook: XLSX.WorkBook): XLSX.WorkSheet {
+  const byExact = workbook.Sheets['Plano'] || workbook.Sheets['PLANO'];
+  if (byExact) return byExact;
+
+  const sheetName = workbook.SheetNames.find((name) => normalizeHeader(name).includes('PLANO'));
+  if (sheetName && workbook.Sheets[sheetName]) return workbook.Sheets[sheetName];
+
+  return workbook.Sheets[workbook.SheetNames[0]];
+}
+
 function calculateShiftAndProductionDay(dateStr: string, timeStr: string): { shift: number; productionDay: string } {
   try {
     const timeParts = timeStr.split(':');
@@ -129,7 +139,7 @@ function readSheetMatrix(buffer: ArrayBuffer): any[][] {
 
 function parseProductionPlanExcelCore(buffer: ArrayBuffer): ProductionPlanRow[] {
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const sheet = pickPlanSheet(workbook);
   const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
 
   const results: ProductionPlanRow[] = [];
