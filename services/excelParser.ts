@@ -2,9 +2,9 @@ import * as XLSX from 'xlsx';
 import { ProductionPlanRow, ActualProductionRecord, FailureReportRecord } from '../types';
 
 type WorkerRequest =
-  | { id: string; kind: 'plan'; file: File }
-  | { id: string; kind: 'actual'; file: File }
-  | { id: string; kind: 'failure'; file: File };
+  | { id: string; kind: 'plan'; buffer: ArrayBuffer }
+  | { id: string; kind: 'actual'; buffer: ArrayBuffer }
+  | { id: string; kind: 'failure'; buffer: ArrayBuffer };
 type WorkerResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: string };
@@ -122,7 +122,8 @@ export const fileToBase64 = (file: File): Promise<string> => {
 
 export const parseProductionPlanExcel = async (file: File): Promise<ProductionPlanRow[]> => {
   try {
-    return await runInWorker<ProductionPlanRow[]>({ kind: 'plan', file });
+    const buffer = await file.arrayBuffer();
+    return await runInWorker<ProductionPlanRow[]>({ kind: 'plan', buffer });
   } catch {
     // fallback to main thread parser
   }
@@ -222,7 +223,8 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
 
 export const parseActualProductionExcel = async (file: File): Promise<ActualProductionRecord[]> => {
   try {
-    return await runInWorker<ActualProductionRecord[]>({ kind: 'actual', file });
+    const buffer = await file.arrayBuffer();
+    return await runInWorker<ActualProductionRecord[]>({ kind: 'actual', buffer });
   } catch {
     // fallback to main thread parser
   }
@@ -309,7 +311,8 @@ export const parseActualProductionExcel = async (file: File): Promise<ActualProd
 
 export const parseFailureReportExcel = async (file: File): Promise<FailureReportRecord[]> => {
   try {
-    return await runInWorker<FailureReportRecord[]>({ kind: 'failure', file });
+    const buffer = await file.arrayBuffer();
+    return await runInWorker<FailureReportRecord[]>({ kind: 'failure', buffer });
   } catch {
     // fallback to main thread parser
   }

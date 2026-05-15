@@ -2,9 +2,9 @@ import * as XLSX from 'xlsx';
 import type { ProductionPlanRow, ActualProductionRecord, FailureReportRecord } from '../types';
 
 type RequestMessage =
-  | { id: string; kind: 'plan'; file: File }
-  | { id: string; kind: 'actual'; file: File }
-  | { id: string; kind: 'failure'; file: File };
+  | { id: string; kind: 'plan'; buffer: ArrayBuffer }
+  | { id: string; kind: 'actual'; buffer: ArrayBuffer }
+  | { id: string; kind: 'failure'; buffer: ArrayBuffer };
 
 type ResponseMessage =
   | { id: string; ok: true; result: unknown }
@@ -14,16 +14,16 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
   const payload = event.data;
   try {
     if (payload.kind === 'plan') {
-      const result = await parseProductionPlanExcelCore(payload.file);
+      const result = parseProductionPlanExcelCore(payload.buffer);
       postMessage({ id: payload.id, ok: true, result } satisfies ResponseMessage);
       return;
     }
     if (payload.kind === 'actual') {
-      const result = await parseActualProductionExcelCore(payload.file);
+      const result = parseActualProductionExcelCore(payload.buffer);
       postMessage({ id: payload.id, ok: true, result } satisfies ResponseMessage);
       return;
     }
-    const result = await parseFailureReportExcelCore(payload.file);
+    const result = parseFailureReportExcelCore(payload.buffer);
     postMessage({ id: payload.id, ok: true, result } satisfies ResponseMessage);
   } catch (err) {
     postMessage({
@@ -112,16 +112,14 @@ function calculateShiftAndProductionDay(dateStr: string, timeStr: string): { shi
   }
 }
 
-async function readSheetMatrix(file: File): Promise<any[][]> {
-  const buffer = await file.arrayBuffer();
+function readSheetMatrix(buffer: ArrayBuffer): any[][] {
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
   return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
 }
 
-async function parseProductionPlanExcelCore(file: File): Promise<ProductionPlanRow[]> {
-  const buffer = await file.arrayBuffer();
+function parseProductionPlanExcelCore(buffer: ArrayBuffer): ProductionPlanRow[] {
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
@@ -207,8 +205,7 @@ async function parseProductionPlanExcelCore(file: File): Promise<ProductionPlanR
   return results;
 }
 
-async function parseActualProductionExcelCore(file: File): Promise<ActualProductionRecord[]> {
-  const buffer = await file.arrayBuffer();
+function parseActualProductionExcelCore(buffer: ArrayBuffer): ActualProductionRecord[] {
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
   const exportSheetName = workbook.SheetNames.find((name) => name.toLowerCase().includes('export'));
   const sheetName = exportSheetName || workbook.SheetNames[0];
@@ -266,8 +263,7 @@ async function parseActualProductionExcelCore(file: File): Promise<ActualProduct
   return results;
 }
 
-async function parseFailureReportExcelCore(file: File): Promise<FailureReportRecord[]> {
-  const buffer = await file.arrayBuffer();
+function parseFailureReportExcelCore(buffer: ArrayBuffer): FailureReportRecord[] {
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
 
   const normalizeSheet = (val: string) =>
@@ -346,4 +342,3 @@ async function parseFailureReportExcelCore(file: File): Promise<FailureReportRec
 
   return results;
 }
-
