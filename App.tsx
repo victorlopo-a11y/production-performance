@@ -14,6 +14,11 @@ import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 
 const App: React.FC = () => {
+  const apiKey =
+    (import.meta as any)?.env?.VITE_API_KEY ||
+    (import.meta as any)?.env?.API_KEY ||
+    (globalThis as any)?.process?.env?.API_KEY ||
+    '';
   const [planData, setPlanData] = useState<ProductionPlanRow[]>([]);
   const [actualData, setActualData] = useState<ActualProductionRecord[]>([]);
   const [failureData, setFailureData] = useState<FailureReportRecord[]>([]);
@@ -59,7 +64,7 @@ const App: React.FC = () => {
 
   const extractPlanFromPDF = async (file: File): Promise<ProductionPlanRow[]> => {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       const base64 = await fileToBase64(file);
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -80,7 +85,7 @@ const App: React.FC = () => {
 
   const extractActualFromPDF = async (file: File): Promise<ActualProductionRecord[]> => {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       const base64 = await fileToBase64(file);
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
