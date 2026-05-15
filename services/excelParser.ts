@@ -1,6 +1,61 @@
 import * as XLSX from 'xlsx';
 import { ProductionPlanRow, ActualProductionRecord, FailureReportRecord } from '../types';
 
+type WorkerRequest =
+  | { id: string; kind: 'plan'; file: File }
+  | { id: string; kind: 'actual'; file: File }
+  | { id: string; kind: 'failure'; file: File };
+type WorkerResponse =
+  | { id: string; ok: true; result: unknown }
+  | { id: string; ok: false; error: string };
+
+let workerSingleton: Worker | null = null;
+let workerSeq = 0;
+const workerPending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+function getWorker(): Worker | null {
+  if (typeof Worker === 'undefined') return null;
+  if (workerSingleton) return workerSingleton;
+
+  try {
+    workerSingleton = new Worker(new URL('./excelParseWorker.ts', import.meta.url), { type: 'module' });
+    workerSingleton.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      const msg = event.data;
+      const pending = workerPending.get(msg.id);
+      if (!pending) return;
+      workerPending.delete(msg.id);
+      if (msg.ok) {
+        pending.resolve(msg.result);
+      } else {
+        pending.reject(new Error(msg.error || 'Erro ao processar arquivo'));
+      }
+    };
+    workerSingleton.onerror = (err) => {
+      workerPending.forEach(({ reject }) => reject(new Error(`Worker error: ${String(err)}`)));
+      workerPending.clear();
+      workerSingleton?.terminate();
+      workerSingleton = null;
+    };
+    return workerSingleton;
+  } catch {
+    workerSingleton = null;
+    return null;
+  }
+}
+
+async function runInWorker<T>(payload: Omit<WorkerRequest, 'id'>): Promise<T> {
+  const worker = getWorker();
+  if (!worker) throw new Error('Worker indisponível');
+
+  const id = `excel-${Date.now()}-${workerSeq++}`;
+  const message: WorkerRequest = { id, ...payload } as WorkerRequest;
+
+  return new Promise<T>((resolve, reject) => {
+    workerPending.set(id, { resolve: resolve as unknown as (v: unknown) => void, reject });
+    worker.postMessage(message);
+  });
+}
+
 export const parseExcelDate = (serial: any): string => {
   if (!serial) return '';
   if (serial instanceof Date) {
@@ -66,6 +121,11 @@ export const fileToBase64 = (file: File): Promise<string> => {
 };
 
 export const parseProductionPlanExcel = async (file: File): Promise<ProductionPlanRow[]> => {
+  try {
+    return await runInWorker<ProductionPlanRow[]>({ kind: 'plan', file });
+  } catch {
+    // fallback to main thread parser
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -161,6 +221,11 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
 };
 
 export const parseActualProductionExcel = async (file: File): Promise<ActualProductionRecord[]> => {
+  try {
+    return await runInWorker<ActualProductionRecord[]>({ kind: 'actual', file });
+  } catch {
+    // fallback to main thread parser
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -243,6 +308,11 @@ export const parseActualProductionExcel = async (file: File): Promise<ActualProd
 };
 
 export const parseFailureReportExcel = async (file: File): Promise<FailureReportRecord[]> => {
+  try {
+    return await runInWorker<FailureReportRecord[]>({ kind: 'failure', file });
+  } catch {
+    // fallback to main thread parser
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
