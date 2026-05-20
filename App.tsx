@@ -123,7 +123,7 @@ const App: React.FC = () => {
         alert('NÃ£o encontrei metas (PROG) nesse arquivo. Confirme se a aba \"Plano\" existe e se o arquivo Ã© do modelo correto.');
       }
       setPlanData(prev => [...prev, ...all]);
-    } catch (err) { alert('Erro no processamento.'); }
+    } catch (err) { alert(`Erro no processamento: ${err instanceof Error ? err.message : String(err)}`); }
     finally { setIsLoading(false); e.target.value = ''; }
   };
 
@@ -139,7 +139,7 @@ const App: React.FC = () => {
         all = [...all, ...results];
       }
       setPlanData(prev => [...prev, ...all]);
-    } catch (err) { alert('Erro no processamento.'); }
+    } catch (err) { alert(`Erro no processamento: ${err instanceof Error ? err.message : String(err)}`); }
     finally { setIsLoading(false); e.target.value = ''; }
   };
 

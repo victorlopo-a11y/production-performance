@@ -143,7 +143,9 @@ export const fileToBase64 = (file: File): Promise<string> => {
 export const parseProductionPlanExcel = async (file: File): Promise<ProductionPlanRow[]> => {
   try {
     const buffer = await file.arrayBuffer();
-    return await runInWorker<ProductionPlanRow[]>({ kind: 'plan', buffer });
+    const result = await runInWorker<ProductionPlanRow[]>({ kind: 'plan', buffer });
+    // If worker fails to detect the plan layout and returns empty, try the fallback parser.
+    if (Array.isArray(result) && result.length > 0) return result;
   } catch {
     // fallback to main thread parser
   }
