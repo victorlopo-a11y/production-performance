@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { ProductionPlanRow, ActualProductionRecord, FailureReportRecord } from '../types';
+import type { ProductionPlanRow, ActualProductionRecord, FailureReportRecord } from '../types';
 
 type WorkerRequest =
   | { id: string; kind: 'plan'; buffer: ArrayBuffer }
@@ -140,7 +140,7 @@ export const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-const normalizeHeader = (value: any): string =>
+const normalizeSimplePlanHeader = (value: any): string =>
   String(value ?? '')
     .toLowerCase()
     .normalize('NFD')
@@ -159,7 +159,7 @@ const parseDateFromFileName = (fileName: string): string => {
 };
 
 const parseShiftFromLine = (line: string): number => {
-  const normalized = normalizeHeader(line);
+  const normalized = normalizeSimplePlanHeader(line);
   const explicitShift = normalized.match(/(?:^|\s)([12])\s*(?:o\s*)?t(?:\s|$)/);
   if (explicitShift) return Number(explicitShift[1]);
   return 1; // Linhas administrativas (ADM) pertencem ao primeiro turno.
@@ -209,14 +209,14 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
         // A data vem no nome do arquivo (ex.: plano_producao_2026-08-17.xlsx).
         const simpleHeaderRowIndex = rows.findIndex((row, index) => {
           if (index >= 100) return false;
-          const headers = row.map(normalizeHeader);
+          const headers = row.map(normalizeSimplePlanHeader);
           return headers.includes('linha') &&
             headers.includes('produto') &&
             headers.some(header => header === 'programacao');
         });
 
         if (simpleHeaderRowIndex !== -1) {
-          const headers = rows[simpleHeaderRowIndex].map(normalizeHeader);
+          const headers = rows[simpleHeaderRowIndex].map(normalizeSimplePlanHeader);
           const lineIdx = headers.indexOf('linha');
           const codeIdx = headers.indexOf('produto');
           const descriptionIdx = headers.indexOf('descricao');
