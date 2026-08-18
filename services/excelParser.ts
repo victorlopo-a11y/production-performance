@@ -140,6 +140,38 @@ export const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
+const normalizeHeader = (value: any): string =>
+  String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const parseDateFromFileName = (fileName: string): string => {
+  const isoDate = fileName.match(/(?:^|\D)(\d{4})[-_.](\d{2})[-_.](\d{2})(?:\D|$)/);
+  if (isoDate) return `${isoDate[3]}/${isoDate[2]}/${isoDate[1]}`;
+
+  const brDate = fileName.match(/(?:^|\D)(\d{2})[-_.](\d{2})[-_.](\d{4})(?:\D|$)/);
+  if (brDate) return `${brDate[1]}/${brDate[2]}/${brDate[3]}`;
+
+  return '';
+};
+
+const parseShiftFromLine = (line: string): number => {
+  const normalized = normalizeHeader(line);
+  const explicitShift = normalized.match(/(?:^|\s)([12])\s*(?:o\s*)?t(?:\s|$)/);
+  if (explicitShift) return Number(explicitShift[1]);
+  return 1; // Linhas administrativas (ADM) pertencem ao primeiro turno.
+};
+
+const parseNumber = (value: any): number => {
+  if (typeof value === 'number') return value;
+  const text = String(value ?? '').trim();
+  if (!text) return NaN;
+  return parseFloat(text.replace(/\s/g, '').replace(/\./g, '').replace(',', '.'));
+};
+
 export const parseProductionPlanExcel = async (file: File): Promise<ProductionPlanRow[]> => {
   try {
     const buffer = await file.arrayBuffer();
@@ -172,6 +204,47 @@ export const parseProductionPlanExcel = async (file: File): Promise<ProductionPl
         const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         
         const results: ProductionPlanRow[] = [];
+
+        // Novo formato: uma tabela simples com uma linha por produto/linha.
+        // A data vem no nome do arquivo (ex.: plano_producao_2026-08-17.xlsx).
+        const simpleHeaderRowIndex = rows.findIndex((row, index) => {
+          if (index >= 100) return false;
+          const headers = row.map(normalizeHeader);
+          return headers.includes('linha') &&
+            headers.includes('produto') &&
+            headers.some(header => header === 'programacao');
+        });
+
+        if (simpleHeaderRowIndex !== -1) {
+          const headers = rows[simpleHeaderRowIndex].map(normalizeHeader);
+          const lineIdx = headers.indexOf('linha');
+          const codeIdx = headers.indexOf('produto');
+          const descriptionIdx = headers.indexOf('descricao');
+          const programmingIdx = headers.indexOf('programacao');
+          const dateIdx = headers.findIndex(header => header === 'data' || header === 'dia');
+          const fileDate = parseDateFromFileName(file.name);
+
+          for (let i = simpleHeaderRowIndex + 1; i < rows.length; i++) {
+            const row = rows[i];
+            const line = String(row[lineIdx] ?? '').trim();
+            const code = String(row[codeIdx] ?? '').trim();
+            const meta = Math.round(parseNumber(row[programmingIdx]));
+            if (!line || !code || code.toLowerCase() === 'total' || !Number.isFinite(meta) || meta <= 0) continue;
+
+            const rowDate = dateIdx >= 0 ? parseExcelDate(row[dateIdx]) : '';
+            results.push({
+              line,
+              shift: parseShiftFromLine(line),
+              code,
+              product: String(row[descriptionIdx] ?? '').trim() || code,
+              date: rowDate || fileDate,
+              meta
+            });
+          }
+
+          return resolve(results);
+        }
+
         let headerRowIndex = -1;
         let dateRowIndex = -1;
 
