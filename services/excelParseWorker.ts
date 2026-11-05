@@ -275,7 +275,7 @@ function parseActualProductionExcelCore(buffer: ArrayBuffer): ActualProductionRe
       if (!r.material) return false;
       const material = r.material.toLowerCase();
       if (material === 'total') return false;
-      if (material.startsWith('mon')) return false;
+      // Include MON assembly materials in actual production totals.
       return r.quantity > 0;
     });
 
