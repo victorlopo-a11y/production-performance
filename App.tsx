@@ -116,7 +116,7 @@ const App: React.FC = () => {
       const files = Array.from(e.target.files);
       let all = [];
       for (const f of files) {
-        const results = f.name.endsWith('.pdf') ? await extractPlanFromPDF(f) : await parseProductionPlanExcel(f);
+        const results = f.name.toLowerCase().endsWith('.pdf') ? await extractPlanFromPDF(f) : await parseProductionPlanExcel(f);
         all = [...all, ...results];
       }
       if (all.length === 0) {
@@ -135,7 +135,7 @@ const App: React.FC = () => {
       const files = Array.from(e.target.files);
       let all = [];
       for (const f of files) {
-        const results = f.name.endsWith('.pdf') ? await extractPlanFromPDF(f) : await parseProductionPlanExcel(f);
+        const results = f.name.toLowerCase().endsWith('.pdf') ? await extractPlanFromPDF(f) : await parseProductionPlanExcel(f);
         all = [...all, ...results];
       }
       setPlanData(prev => [...prev, ...all]);
@@ -151,7 +151,7 @@ const App: React.FC = () => {
       const files = Array.from(e.target.files);
       let all: FailureReportRecord[] = [];
       for (const f of files) {
-        if (f.name.endsWith('.pdf')) {
+        if (f.name.toLowerCase().endsWith('.pdf')) {
           const results = await extractActualFromPDF(f);
           all = [...all, ...results.map(r => ({ ...r, origin: '' }))];
         } else {
@@ -172,11 +172,15 @@ const App: React.FC = () => {
       const files = Array.from(e.target.files);
       let all = [];
       for (const f of files) {
-        const results = f.name.endsWith('.pdf') ? await extractActualFromPDF(f) : await parseActualProductionExcel(f);
+        const results = f.name.toLowerCase().endsWith('.pdf') ? await extractActualFromPDF(f) : await parseActualProductionExcel(f);
         all = [...all, ...results];
       }
       setActualData(prev => [...prev, ...all]);
-    } catch (err) { alert('Erro no processamento.'); }
+    } catch (err) {
+      console.error('Erro ao importar produção realizada:', err);
+      const details = err instanceof Error ? err.message : String(err);
+      alert(`Erro ao importar produção realizada: ${details}`);
+    }
     finally { setIsLoading(false); e.target.value = ''; }
   };
 
