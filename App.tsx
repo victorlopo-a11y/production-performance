@@ -160,7 +160,11 @@ const App: React.FC = () => {
         }
       }
       setFailureData(prev => [...prev, ...all]);
-    } catch (err) { alert('Erro no processamento.'); }
+    } catch (err) {
+      console.error('Erro ao importar Relatório AT-AR:', err);
+      const details = err instanceof Error ? err.message : String(err);
+      alert(`Erro ao importar Relatório AT-AR: ${details}`);
+    }
     finally { setIsLoading(false); e.target.value = ''; }
   };
 
