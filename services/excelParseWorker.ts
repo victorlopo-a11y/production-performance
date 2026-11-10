@@ -354,7 +354,6 @@ function parseFailureReportExcelCore(buffer: ArrayBuffer): FailureReportRecord[]
       const material = r.material.toLowerCase();
       const line = r.line.toLowerCase();
       if (material === 'total' || line === 'total') return false;
-      if (material.startsWith('mon')) return false;
       if (!r.line && !r.material) return false;
       return true;
     });
