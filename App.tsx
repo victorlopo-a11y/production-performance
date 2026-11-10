@@ -83,7 +83,16 @@ const App: React.FC = () => {
     }
   };
 
-  const extractActualFromPDF = async (file: File): Promise<ActualProductionRecord[]> => {
+  const extractActualFromVisual = async (file: File): Promise<ActualProductionRecord[]> => {
+    if (!apiKey) throw new Error('A chave da API de leitura de PDFs/imagens não está configurada.');
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp'
+    };
+    const mimeType = mimeTypes[extension || ''] || file.type;
+    if (!['application/pdf', 'image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) {
+      throw new Error(`Formato não suportado: ${file.name}. Use PDF, PNG, JPG ou WEBP.`);
+    }
     try {
       const ai = new GoogleGenAI({ apiKey });
       const base64 = await fileToBase64(file);
@@ -91,20 +100,26 @@ const App: React.FC = () => {
         model: 'gemini-3-flash-preview',
         contents: {
           parts: [
-            { inlineData: { data: base64, mimeType: 'application/pdf' } },
+            { inlineData: { data: base64, mimeType } },
             { text: "Extraia a produção real. Linha, Material, Quantidade, Data e Hora. Retorne JSON: Array<{ line: string, material: string, quantity: number, date: string (DD/MM/YYYY), time: string (HH:MM:SS) }>." }
           ]
         },
         config: { responseMimeType: "application/json" }
       });
       const raw = JSON.parse(response.text || '[]');
+      if (!Array.isArray(raw)) throw new Error('O arquivo não retornou uma lista de registros de produção.');
       return raw.map((item: any) => {
-        const shiftData = calculateShiftAndProductionDay(item.date, item.time);
-        return { ...item, shift: shiftData.shift, productionDay: shiftData.productionDay };
-      });
+        const line = String(item.line ?? '').trim();
+        const material = String(item.material ?? '').trim();
+        const quantity = Number(item.quantity) || 0;
+        const date = String(item.date ?? '').trim();
+        const time = String(item.time ?? '').trim();
+        const shiftData = calculateShiftAndProductionDay(date, time);
+        return { line, material, quantity, date, time, shift: shiftData.shift, productionDay: shiftData.productionDay };
+      }).filter(item => item.quantity > 0 && (item.line || item.material));
     } catch (e) {
-      console.error(e);
-      return [];
+      console.error('Erro ao ler arquivo visual de produção:', e);
+      throw e;
     }
   };
 
@@ -151,8 +166,8 @@ const App: React.FC = () => {
       const files = Array.from(e.target.files);
       let all: FailureReportRecord[] = [];
       for (const f of files) {
-        if (f.name.toLowerCase().endsWith('.pdf')) {
-          const results = await extractActualFromPDF(f);
+        if (/\.(pdf|png|jpe?g|webp)$/i.test(f.name)) {
+          const results = await extractActualFromVisual(f);
           all = [...all, ...results.map(r => ({ ...r, origin: '' }))];
         } else {
           const results = await parseFailureReportExcel(f);
@@ -176,7 +191,8 @@ const App: React.FC = () => {
       const files = Array.from(e.target.files);
       let all = [];
       for (const f of files) {
-        const results = f.name.toLowerCase().endsWith('.pdf') ? await extractActualFromPDF(f) : await parseActualProductionExcel(f);
+        const isVisualFile = /\.(pdf|png|jpe?g|webp)$/i.test(f.name);
+        const results = isVisualFile ? await extractActualFromVisual(f) : await parseActualProductionExcel(f);
         all = [...all, ...results];
       }
       setActualData(prev => [...prev, ...all]);
@@ -464,7 +480,7 @@ const App: React.FC = () => {
                 <List className="mx-auto text-indigo-500" size={48}/>
                 <h3 className="text-xl font-black">PRODUÇÃO REALIZADA</h3>
                 <label className="block bg-slate-900 text-white py-4 rounded-2xl font-black cursor-pointer hover:bg-slate-800 transition-all shadow-lg shadow-slate-200">
-                  <input type="file" multiple onChange={handleActualUpload} className="hidden" />
+                  <input type="file" multiple accept=".xls,.xlsx,.xlsm,.csv,.pdf,.png,.jpg,.jpeg,.webp" onChange={handleActualUpload} className="hidden" />
                   CARREGAR PRODUÇÃO
                 </label>
                 {actualData.length > 0 && <span className="inline-block bg-green-50 text-green-600 px-4 py-1 rounded-full text-xs font-black uppercase tracking-wider">{actualData.length} entradas reais</span>}
@@ -473,7 +489,7 @@ const App: React.FC = () => {
                 <AlertCircle className="mx-auto text-rose-500" size={48}/>
                 <h3 className="text-xl font-black">RELATORIO AT - AR</h3>
                 <label className="block bg-rose-600 text-white py-4 rounded-2xl font-black cursor-pointer hover:bg-rose-700 transition-all shadow-lg shadow-rose-100">
-                  <input type="file" multiple onChange={handleFailureUpload} className="hidden" />
+                  <input type="file" multiple accept=".xls,.xlsx,.xlsm,.csv,.pdf,.png,.jpg,.jpeg,.webp" onChange={handleFailureUpload} className="hidden" />
                   CARREGAR RELATORIO
                 </label>
                 {failureData.length > 0 && <span className="inline-block bg-green-50 text-green-600 px-4 py-1 rounded-full text-xs font-black uppercase tracking-wider">{failureData.length} falhas importadas</span>}
